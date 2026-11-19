@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VICE COVER — GTA-style cover art maker</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-name">VICE COVER</span>
+    <span class="brand-tag">Turn any photo into a GTA-style poster cover</span>
+  </div>
+  <div class="brand-badge">OFFLINE &middot; NO UPLOAD</div>
+</header>
+
+<nav class="layouts" aria-label="Cover layout">
+  <button class="layout-btn is-active" data-layout="POSTER" type="button">Poster</button>
+  <button class="layout-btn" data-layout="GRID" type="button">Grid</button>
+  <button class="layout-btn" data-layout="STRIP" type="button">Strip</button>
+  <button class="layout-btn" data-layout="HERO" type="button">Hero</button>
+</nav>
+
+<main class="workspace">
+  <section class="stage">
+    <div class="canvas-wrap" id="canvas-wrap">
+      <canvas id="preview-canvas" width="720" height="720"></canvas>
+      <div class="drop-hint" id="drop-hint">Drop a photo to load it</div>
+      <div class="panel-tip" id="panel-tip">Click a panel to select it &middot; drag to pan &middot; scroll to zoom</div>
+    </div>
+  </section>
+
+  <aside class="panel">
+    <section class="ctl">
+      <h2 class="ctl-title">Photo</h2>
+      <button class="btn btn-primary" id="upload-btn" type="button">Upload a photo</button>
+      <input type="file" id="file-input" accept="image/*" hidden>
+      <p class="ctl-note">Or drop an image onto the preview. Your photo never leaves this machine.</p>
+      <div class="samples">
+        <button class="sample-btn is-active" data-sample="samples/sunset-heist.jpg" type="button" title="Sunset Heist">
+          <img src="samples/sunset-heist.jpg" alt="Sunset Heist sample">
+          <span>Sunset Heist</span>
+        </button>
+        <button class="sample-btn" data-sample="samples/boulevard.jpg" type="button" title="Boulevard">
+          <img src="samples/boulevard.jpg" alt="Boulevard sample">
+          <span>Boulevard</span>
+        </button>
+        <button class="sample-btn" data-sample="samples/pier.jpg" type="button" title="Pier">
+          <img src="samples/pier.jpg" alt="Pier sample">
+          <span>Pier</span>
+        </button>
+      </div>
+    </section>
+
+    <section class="ctl">
+      <h2 class="ctl-title">Caption</h2>
+      <label class="field-label" for="caption-input">Title</label>
+      <input class="text-input" id="caption-input" type="text" value="SUNSET HEIST" maxlength="24" autocomplete="off">
+      <label class="field-label" for="subtitle-input">Subtitle</label>
+      <input class="text-input" id="subtitle-input" type="text" value="VICE CITY &bull; EST. 2026" maxlength="40" autocomplete="off">
+      <div class="swatches" role="group" aria-label="Caption colour">
+        <button class="swatch is-active" data-color="pink" type="button" title="Hot pink" aria-label="Hot pink"></button>
+        <button class="swatch" data-color="cyan" type="button" title="Neon cyan" aria-label="Neon cyan"></button>
+        <button class="swatch" data-color="gold" type="button" title="Warm gold" aria-label="Warm gold"></button>
+        <button class="swatch" data-color="white" type="button" title="White" aria-label="White"></button>
+      </div>
+    </section>
+
+    <section class="ctl">
+      <h2 class="ctl-title">Grade</h2>
+      <div class="grade-row">
+        <button class="grade-btn is-active" data-grade="sunset" type="button">Vice Sunset</button>
+        <button class="grade-btn" data-grade="neon" type="button">Neon Nights</button>
+        <button class="grade-btn" data-grade="golden" type="button">Golden Hour</button>
+        <button class="grade-btn" data-grade="mono" type="button">Mono Noir</button>
+      </div>
+    </section>
+
+    <section class="ctl">
+      <h2 class="ctl-title">Zoom <span class="zoom-readout" id="zoom-readout">100%</span></h2>
+      <input class="zoom-slider" id="zoom-slider" type="range" min="100" max="300" value="100" step="1">
+      <p class="ctl-note">Zooms the selected panel. Drag inside a panel to pan it.</p>
+    </section>
+
+    <section class="ctl">
+      <h2 class="ctl-title">Export PNG</h2>
+      <div class="export-row">
+        <button class="btn export-btn" data-export="1080x1080" type="button">1080 &times; 1080</button>
+        <button class="btn export-btn" data-export="1080x1350" type="button">1080 &times; 1350</button>
+        <button class="btn export-btn" data-export="1920x1080" type="button">1920 &times; 1080</button>
+      </div>
+    </section>
+  </aside>
+</main>
+
+<footer class="footnote">
+  VICE COVER runs fully offline &mdash; no network, no upload, no account. All art is original:
+  no Rockstar logos, artwork or fonts are used anywhere in this app.
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
