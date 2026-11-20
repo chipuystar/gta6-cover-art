@@ -1,587 +1,572 @@
-/* VICE COVER — the whole editor in one script.
-   One shared renderCover() draws the poster for the on-screen preview and
-   for every PNG export, so what you see is exactly what you get. */
+// VICE COVER — one script owns every behaviour of the cover editor.
+//
+// The editor state lives in `state`. A single render function draws the
+// cover into any canvas at any size, so the on-screen preview and the
+// exported PNG are always the same picture.
 
 (function () {
-  "use strict";
+  'use strict';
 
-  /* ---------- layout definitions (fractions of the cover) ---------- */
+  var canvas = document.getElementById('coverCanvas');
+  var ctx = canvas.getContext('2d');
+  var frame = document.getElementById('previewFrame');
+  var zoomSlider = document.getElementById('zoomSlider');
+  var zoomValue = document.getElementById('zoomValue');
+
+  // -- layouts: each panel is a rectangle in fractions of the cover ----
+
+  var GAP = 0.014;
 
   var LAYOUTS = {
-    POSTER: [[0, 0, 1, 1]],
-    GRID: [
-      [0, 0, 0.494, 0.494],
-      [0.506, 0, 0.494, 0.494],
-      [0, 0.506, 0.494, 0.494],
-      [0.506, 0.506, 0.494, 0.494]
-    ],
-    STRIP: [
-      [0, 0, 1, 0.452],
-      [0, 0.464, 1, 0.26],
-      [0, 0.736, 1, 0.264]
-    ],
-    HERO: [
-      [0, 0, 0.662, 1],
-      [0.674, 0, 0.326, 0.494],
-      [0.674, 0.506, 0.326, 0.494]
-    ]
+    poster: function () {
+      return [{ x: 0, y: 0, w: 1, h: 1 }];
+    },
+    grid: function () {
+      var s = (1 - GAP) / 2;
+      return [
+        { x: 0, y: 0, w: s, h: s },
+        { x: s + GAP, y: 0, w: s, h: s },
+        { x: 0, y: s + GAP, w: s, h: s },
+        { x: s + GAP, y: s + GAP, w: s, h: s },
+      ];
+    },
+    strip: function () {
+      return [
+        { x: 0, y: 0, w: 1, h: 0.46 },
+        { x: 0, y: 0.472, w: 1, h: 0.26 },
+        { x: 0, y: 0.744, w: 1, h: 0.256 },
+      ];
+    },
+    hero: function () {
+      var s = (1 - GAP) / 2;
+      return [
+        { x: 0, y: 0, w: 0.66, h: 1 },
+        { x: 0.674, y: 0, w: 0.326, h: s },
+        { x: 0.674, y: s + GAP, w: 0.326, h: s },
+      ];
+    },
   };
 
-  /* ---------- colour grades ---------- */
+  // -- colour grades: a canvas filter plus a translucent wash -----------
 
   var GRADES = {
     sunset: {
-      filter: "saturate(1.28) contrast(1.07) sepia(0.14) hue-rotate(-10deg)",
-      wash: ["rgba(255,45,149,0.16)", "rgba(255,122,61,0.14)"]
+      filter: 'saturate(1.25) contrast(1.06)',
+      top: 'rgba(255,45,149,0.08)',
+      bottom: 'rgba(255,120,20,0.20)',
     },
     neon: {
-      filter: "saturate(1.45) contrast(1.12) hue-rotate(14deg)",
-      wash: ["rgba(0,229,255,0.14)", "rgba(150,60,255,0.18)"]
+      filter: 'saturate(1.45) contrast(1.08) hue-rotate(-12deg)',
+      top: 'rgba(0,229,255,0.10)',
+      bottom: 'rgba(140,40,255,0.20)',
     },
     golden: {
-      filter: "saturate(1.18) contrast(1.05) sepia(0.28)",
-      wash: ["rgba(255,180,0,0.13)", "rgba(255,110,30,0.10)"]
+      filter: 'sepia(0.28) saturate(1.35) contrast(1.05)',
+      top: 'rgba(255,214,90,0.06)',
+      bottom: 'rgba(255,140,0,0.16)',
     },
     mono: {
-      filter: "grayscale(1) contrast(1.28) brightness(1.04)",
-      wash: ["rgba(20,10,40,0.10)", "rgba(0,0,0,0.14)"]
-    }
+      filter: 'grayscale(1) contrast(1.18) brightness(1.02)',
+      top: 'rgba(255,255,255,0.00)',
+      bottom: 'rgba(0,0,0,0.10)',
+    },
   };
 
-  var CAPTION_COLORS = {
-    pink: "#ff2d95",
-    cyan: "#00e5ff",
-    gold: "#ffb400",
-    white: "#ffffff"
+  // -- default framing for the Sunset Heist sample, per layout ----------
+  // The sample already carries its own title in its lower half, so every
+  // crop here frames the characters and skyline in the upper part.
+
+  var HEIST_FRAMING = {
+    poster: [{ zoom: 1.7, panX: 0, panY: -1 }],
+    grid: [
+      { zoom: 1.7, panX: 0, panY: -1 },
+      { zoom: 2.2, panX: 1, panY: -0.6 },
+      { zoom: 2.4, panX: -1, panY: -0.6 },
+      { zoom: 2.4, panX: 0.7, panY: -0.7 },
+    ],
+    strip: [
+      { zoom: 1.25, panX: 0, panY: -0.55 },
+      { zoom: 1.7, panX: 0.5, panY: -0.35 },
+      { zoom: 1.7, panX: -0.5, panY: -0.55 },
+    ],
+    hero: [
+      { zoom: 1.7, panX: -0.15, panY: -1 },
+      { zoom: 2.0, panX: 1, panY: -0.6 },
+      { zoom: 2.0, panX: -1, panY: -1 },
+    ],
   };
 
-  var DEFAULT_PHOTO = "samples/sunset-heist.jpg";
-  var MIN_ZOOM = 1, MAX_ZOOM = 3;
-
-  /* ---------- state ---------- */
-
-  var state = {
-    photo: null,          // HTMLImageElement, or null before anything loads
-    photoName: "",
-    layout: "POSTER",
-    panels: [],           // one { fx, fy, zoom } per panel of the layout.
-                          // fx/fy are fractions of the maximum pan in
-                          // [-1, 1], so a framing looks the same at preview
-                          // size and at any export size.
-    caption: "SUNSET HEIST",
-    subtitle: "VICE CITY \u2022 EST. 2026",
-    captionColor: "pink",
-    grade: "sunset",
-    selected: 0
-  };
-
-  var lastExport = null;
-
-  /* ---------- DOM ---------- */
-
-  var canvas = document.getElementById("preview-canvas");
-  var ctx = canvas.getContext("2d");
-  var wrap = document.getElementById("canvas-wrap");
-  var dropHint = document.getElementById("drop-hint");
-  var captionInput = document.getElementById("caption-input");
-  var subtitleInput = document.getElementById("subtitle-input");
-  var zoomSlider = document.getElementById("zoom-slider");
-  var zoomReadout = document.getElementById("zoom-readout");
-  var fileInput = document.getElementById("file-input");
-
-  function clamp01(v) { return Math.max(-1, Math.min(1, v)); }
-
-  /* ---------- panel geometry ---------- */
-
-  function panelRects(w, h) {
-    return LAYOUTS[state.layout].map(function (r) {
-      return { x: r[0] * w, y: r[1] * h, w: r[2] * w, h: r[3] * h };
-    });
-  }
+  // -- state ------------------------------------------------------------
 
   function freshPanels() {
-    return LAYOUTS[state.layout].map(function () {
-      return { fx: 0, fy: 0, zoom: 1 };
+    var panels = [];
+    for (var i = 0; i < 4; i++) panels.push({ panX: 0, panY: 0, zoom: 1 });
+    return panels;
+  }
+
+  var state = {
+    photo: null,
+    photoName: '',
+    layout: 'poster',
+    panels: freshPanels(),
+    selected: 0,
+    caption: 'SUNSET HEIST',
+    subtitle: 'VICE CITY \u2022 EST. 2026',
+    captionColor: '#ff2d95',
+    grade: 'sunset',
+  };
+
+  function panelsOf() {
+    return LAYOUTS[state.layout]();
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  // -- photo loading ----------------------------------------------------
+
+  function applyFraming(name) {
+    state.panels = freshPanels();
+    var framing = name === 'heist' ? HEIST_FRAMING[state.layout] : null;
+    if (!framing) return;
+    for (var i = 0; i < framing.length && i < state.panels.length; i++) {
+      state.panels[i] = {
+        panX: framing[i].panX,
+        panY: framing[i].panY,
+        zoom: framing[i].zoom,
+      };
+    }
+  }
+
+  function loadPhotoFromUrl(url, framingName) {
+    return new Promise(function (resolve, reject) {
+      var img = new Image();
+      img.onload = function () {
+        state.photo = img;
+        state.photoName = url;
+        state.selected = 0;
+        applyFraming(framingName || null);
+        syncZoomControl();
+        renderPreview();
+        resolve(img);
+      };
+      img.onerror = reject;
+      img.src = url;
     });
   }
 
-  // Cover-fit scale for the photo inside a panel, before the panel zoom.
-  function baseScale(rect) {
-    return Math.max(rect.w / state.photo.width, rect.h / state.photo.height);
-  }
-
-  // Drawn size of the photo inside a panel at its current zoom.
-  function drawnSize(rect, panel) {
-    var s = baseScale(rect) * panel.zoom;
-    return { w: state.photo.width * s, h: state.photo.height * s, scale: s };
-  }
-
-  // Largest pan, in pixels at this render size, that keeps the panel covered.
-  function maxPanPx(rect, panel) {
-    var d = drawnSize(rect, panel);
-    return {
-      x: Math.max(0, (d.w - rect.w) / 2),
-      y: Math.max(0, (d.h - rect.h) / 2)
+  function loadPhotoFromFile(file) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      loadPhotoFromUrl(reader.result, null);
     };
+    reader.readAsDataURL(file);
   }
 
-  // Where the photo's top-left corner lands inside its panel, in pixels.
-  function photoOffset(rect, panel) {
-    var d = drawnSize(rect, panel);
-    var m = maxPanPx(rect, panel);
-    return {
-      x: rect.x + (rect.w - d.w) / 2 + panel.fx * m.x,
-      y: rect.y + (rect.h - d.h) / 2 + panel.fy * m.y,
-      w: d.w, h: d.h, scale: d.scale
-    };
-  }
+  // -- rendering --------------------------------------------------------
 
-  // Frame a panel by fractions of its maximum pan: fx/fy in [-1, 1].
-  // fy = +1 shows the top of the photo, fy = -1 the bottom;
-  // fx = +1 shows the left of the photo, fx = -1 the right.
-  function framePanel(index, zoom, fx, fy) {
-    var panel = state.panels[index];
-    if (!panel) return;
-    panel.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom));
-    panel.fx = clamp01(fx);
-    panel.fy = clamp01(fy);
-    syncZoomUI();
-    renderPreview();
-  }
-
-  /* ---------- the shared render ---------- */
-
-  function drawPanel(c, rect, panel) {
-    var o = photoOffset(rect, panel);
+  // Draws one panel: the photo clipped to the panel, scaled to cover it,
+  // panned and zoomed per that panel's state.
+  function drawPanel(c, img, rect, panel, grade) {
+    var px = rect.x;
+    var py = rect.y;
+    var pw = rect.w;
+    var ph = rect.h;
     c.save();
     c.beginPath();
-    c.rect(rect.x, rect.y, rect.w, rect.h);
+    c.rect(px, py, pw, ph);
     c.clip();
-    c.filter = GRADES[state.grade].filter;
-    c.drawImage(state.photo, o.x, o.y, o.w, o.h);
-    c.filter = "none";
+    var scale = Math.max(pw / img.width, ph / img.height) * panel.zoom;
+    var dw = img.width * scale;
+    var dh = img.height * scale;
+    var overX = dw - pw;
+    var overY = dh - ph;
+    var dx = px - overX * (0.5 + panel.panX / 2);
+    var dy = py - overY * (0.5 + panel.panY / 2);
+    c.filter = grade.filter;
+    c.drawImage(img, dx, dy, dw, dh);
+    c.filter = 'none';
     c.restore();
   }
 
-  function drawGradeWash(c, w, h) {
-    var wash = GRADES[state.grade].wash;
-    var g = c.createLinearGradient(0, 0, w, h);
-    g.addColorStop(0, wash[0]);
-    g.addColorStop(1, wash[1]);
+  function drawCaption(c, w, h) {
+    var text = state.caption.trim();
+    if (!text) return;
+    var size = Math.min(w * 0.105, h * 0.17);
+    c.font = size + 'px Bungee, sans-serif';
+    while (size > 12 && c.measureText(text).width > w * 0.92) {
+      size -= 2;
+      c.font = size + 'px Bungee, sans-serif';
+    }
+    c.textAlign = 'center';
+    c.textBaseline = 'alphabetic';
+    c.lineJoin = 'round';
+    c.shadowColor = 'rgba(0,0,0,0.65)';
+    c.shadowBlur = size * 0.14;
+    c.shadowOffsetY = size * 0.045;
+    c.lineWidth = size * 0.14;
+    c.strokeStyle = 'rgba(8,0,18,0.9)';
+    var y = h * 0.93;
+    c.strokeText(text, w / 2, y);
+    c.fillStyle = state.captionColor;
+    c.fillText(text, w / 2, y);
+    c.shadowColor = 'transparent';
+    c.shadowBlur = 0;
+    c.shadowOffsetY = 0;
+  }
+
+  function drawSubtitle(c, w, h) {
+    var text = state.subtitle.trim();
+    if (!text) return;
+    var size = Math.min(w * 0.032, h * 0.05);
+    c.font = '600 ' + size + 'px "Chakra Petch", sans-serif';
+    try {
+      c.letterSpacing = size * 0.32 + 'px';
+    } catch (e) {
+      // Older engines ignore letter spacing; the subtitle still draws.
+    }
+    c.textAlign = 'center';
+    c.textBaseline = 'alphabetic';
+    c.lineWidth = size * 0.22;
+    c.strokeStyle = 'rgba(8,0,18,0.85)';
+    var y = h * 0.975;
+    c.strokeText(text, w / 2, y);
+    c.fillStyle = '#ffffff';
+    c.fillText(text, w / 2, y);
+    try {
+      c.letterSpacing = '0px';
+    } catch (e) {
+      // Ignore.
+    }
+  }
+
+  // The one shared render: preview and export both come through here.
+  function renderCoverInto(c, w, h, showSelection) {
+    var grade = GRADES[state.grade];
     c.save();
-    c.globalCompositeOperation = "overlay";
-    c.fillStyle = g;
+    c.fillStyle = '#0a0512';
     c.fillRect(0, 0, w, h);
-    c.restore();
-    // Gentle vignette so the edges fall away like a printed poster.
-    var v = c.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.42,
-      w / 2, h / 2, Math.max(w, h) * 0.75);
-    v.addColorStop(0, "rgba(0,0,0,0)");
-    v.addColorStop(1, "rgba(0,0,0,0.34)");
-    c.fillStyle = v;
-    c.fillRect(0, 0, w, h);
-  }
-
-  function drawLettering(c, w, h) {
-    var unit = Math.min(w, h);
-    var caption = state.caption.trim();
-    var subtitle = state.subtitle.trim();
-    if (!caption && !subtitle) return;
-
-    // A dark band at the bottom keeps the lettering readable over any photo.
-    var band = c.createLinearGradient(0, h * 0.62, 0, h);
-    band.addColorStop(0, "rgba(5,2,12,0)");
-    band.addColorStop(1, "rgba(5,2,12,0.62)");
-    c.fillStyle = band;
-    c.fillRect(0, h * 0.62, w, h * 0.38);
-
-    var hero = state.layout === "HERO";
-    var left = hero ? w * 0.04 : w * 0.5;
-    var maxW = w * 0.92;
-    c.textAlign = hero ? "left" : "center";
-    c.textBaseline = "alphabetic";
-
-    if (caption) {
-      var size = unit * 0.115;
-      c.font = size + "px Bungee, sans-serif";
-      var tw = c.measureText(caption).width;
-      if (tw > maxW) {
-        size = size * maxW / tw;
-        c.font = size + "px Bungee, sans-serif";
+    var rects = panelsOf();
+    if (state.photo) {
+      for (var i = 0; i < rects.length; i++) {
+        var r = rects[i];
+        drawPanel(
+          c,
+          state.photo,
+          { x: r.x * w, y: r.y * h, w: r.w * w, h: r.h * h },
+          state.panels[i],
+          grade
+        );
       }
-      var cy = subtitle ? h * 0.885 : h * 0.925;
-      c.lineJoin = "round";
-      c.strokeStyle = "rgba(8,2,16,0.9)";
-      c.lineWidth = Math.max(2, size * 0.14);
-      c.strokeText(caption, left, cy);
-      c.shadowColor = "rgba(0,0,0,0.55)";
-      c.shadowBlur = size * 0.12;
-      c.shadowOffsetY = size * 0.03;
-      c.fillStyle = CAPTION_COLORS[state.captionColor];
-      c.fillText(caption, left, cy);
-      c.shadowColor = "transparent";
-      c.shadowBlur = 0;
-      c.shadowOffsetY = 0;
+    } else {
+      c.fillStyle = '#a894c4';
+      c.font = '600 ' + Math.round(w * 0.03) + 'px "Chakra Petch", sans-serif';
+      c.textAlign = 'center';
+      c.fillText('Loading a photo\u2026', w / 2, h / 2);
     }
-
-    if (subtitle) {
-      var sSize = Math.max(10, unit * 0.032);
-      c.font = "600 " + sSize + "px 'Chakra Petch', sans-serif";
-      try { c.letterSpacing = Math.round(sSize * 0.28) + "px"; } catch (e) {}
-      c.fillStyle = "rgba(255,255,255,0.92)";
-      c.fillText(subtitle.toUpperCase(), left, h * 0.955);
-      try { c.letterSpacing = "0px"; } catch (e) {}
-    }
-  }
-
-  function drawFrame(c, w, h) {
-    c.strokeStyle = "rgba(0,0,0,0.85)";
-    c.lineWidth = Math.max(2, Math.min(w, h) * 0.006);
-    c.strokeRect(0, 0, w, h);
-  }
-
-  // The one render path: preview and export both go through here.
-  function renderCover(c, w, h) {
-    c.clearRect(0, 0, w, h);
-    c.fillStyle = "#050308";
+    // Colour grade wash.
+    var wash = c.createLinearGradient(0, 0, 0, h);
+    wash.addColorStop(0, grade.top);
+    wash.addColorStop(1, grade.bottom);
+    c.fillStyle = wash;
     c.fillRect(0, 0, w, h);
-    if (!state.photo) return;
-    var rects = panelRects(w, h);
-    for (var i = 0; i < rects.length; i++) {
-      drawPanel(c, rects[i], state.panels[i]);
+    // Vignette.
+    var vig = c.createRadialGradient(
+      w / 2, h / 2, Math.min(w, h) * 0.42,
+      w / 2, h / 2, Math.max(w, h) * 0.75
+    );
+    vig.addColorStop(0, 'rgba(5,0,15,0)');
+    vig.addColorStop(1, 'rgba(5,0,15,0.34)');
+    c.fillStyle = vig;
+    c.fillRect(0, 0, w, h);
+    drawCaption(c, w, h);
+    drawSubtitle(c, w, h);
+    // Thin dark frame around the whole cover.
+    c.strokeStyle = 'rgba(0,0,0,0.6)';
+    c.lineWidth = Math.max(2, w * 0.006);
+    c.strokeRect(c.lineWidth / 2, c.lineWidth / 2, w - c.lineWidth, h - c.lineWidth);
+    if (showSelection && state.photo) {
+      var sel = rects[state.selected];
+      if (sel) {
+        c.strokeStyle = '#00e5ff';
+        c.lineWidth = Math.max(2, w * 0.004);
+        c.shadowColor = 'rgba(0,229,255,0.8)';
+        c.shadowBlur = w * 0.01;
+        c.strokeRect(sel.x * w, sel.y * h, sel.w * w, sel.h * h);
+        c.shadowBlur = 0;
+      }
     }
-    drawGradeWash(c, w, h);
-    drawLettering(c, w, h);
-    drawFrame(c, w, h);
+    c.restore();
   }
 
   function renderPreview() {
-    renderCover(ctx, canvas.width, canvas.height);
-    // Outline the selected panel on the preview only, never in an export.
-    if (state.photo && state.panels.length > 1) {
-      var r = panelRects(canvas.width, canvas.height)[state.selected];
-      if (r) {
-        ctx.save();
-        ctx.strokeStyle = "#00e5ff";
-        ctx.lineWidth = 3;
-        ctx.setLineDash([10, 6]);
-        ctx.strokeRect(r.x + 2, r.y + 2, r.w - 4, r.h - 4);
-        ctx.restore();
-      }
-    }
+    renderCoverInto(ctx, canvas.width, canvas.height, true);
   }
 
-  /* ---------- photo loading ---------- */
-
-  function resetPanelsFor(photoSrc) {
-    state.panels = freshPanels();
-    // The Sunset Heist sample carries its own title in its lower half, so
-    // the default view frames the characters and skyline above it and lets
-    // the app's caption do the titling.
-    if (photoSrc && photoSrc.indexOf("sunset-heist") !== -1) {
-      state.panels.forEach(function (panel) {
-        panel.zoom = 1.9;
-        panel.fy = 1;
-      });
-    }
+  // Renders the cover at an export size and returns the canvas.
+  function renderExport(width, height) {
+    var out = document.createElement('canvas');
+    out.width = width;
+    out.height = height;
+    renderCoverInto(out.getContext('2d'), width, height, false);
+    return out;
   }
 
-  function loadPhoto(src, name) {
-    var img = new Image();
-    img.onload = function () {
-      state.photo = img;
-      state.photoName = name || "";
-      resetPanelsFor(src);
-      syncZoomUI();
-      renderPreview();
-    };
-    img.onerror = function () {
-      state.photo = null;
-      renderPreview();
-    };
-    img.src = src;
+  function downloadExport(width, height) {
+    renderExport(width, height).toBlob(function (blob) {
+      if (!blob) return;
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'vice-cover-' + width + 'x' + height + '.png';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function () {
+        URL.revokeObjectURL(url);
+      }, 5000);
+    }, 'image/png');
   }
 
-  function loadSample(src) {
-    document.querySelectorAll(".sample-btn").forEach(function (b) {
-      b.classList.toggle("is-active", b.dataset.sample === src);
-    });
-    loadPhoto(src, src.split("/").pop());
-  }
+  // -- panel interaction -------------------------------------------------
 
-  /* ---------- UI wiring ---------- */
-
-  function syncZoomUI() {
-    var panel = state.panels[state.selected];
-    var pct = panel ? Math.round(panel.zoom * 100) : 100;
-    zoomSlider.value = pct;
-    zoomReadout.textContent = pct + "%";
-  }
-
-  function setLayout(name) {
-    if (!LAYOUTS[name]) return;
-    state.layout = name;
-    state.selected = 0;
-    state.panels = freshPanels();
-    if (state.photo) resetPanelsFor(state.photoName);
-    document.querySelectorAll(".layout-btn").forEach(function (b) {
-      b.classList.toggle("is-active", b.dataset.layout === name);
-    });
-    syncZoomUI();
-    renderPreview();
-  }
-
-  function setGrade(name) {
-    if (!GRADES[name]) return;
-    state.grade = name;
-    document.querySelectorAll(".grade-btn").forEach(function (b) {
-      b.classList.toggle("is-active", b.dataset.grade === name);
-    });
-    renderPreview();
-  }
-
-  function setCaptionColor(name) {
-    if (!CAPTION_COLORS[name]) return;
-    state.captionColor = name;
-    document.querySelectorAll(".swatch").forEach(function (b) {
-      b.classList.toggle("is-active", b.dataset.color === name);
-    });
-    renderPreview();
-  }
-
-  function setZoomPercent(pct) {
-    var panel = state.panels[state.selected];
-    if (!panel) return;
-    panel.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, pct / 100));
-    syncZoomUI();
-    renderPreview();
-  }
-
-  document.querySelectorAll(".layout-btn").forEach(function (b) {
-    b.addEventListener("click", function () { setLayout(b.dataset.layout); });
-  });
-
-  document.querySelectorAll(".grade-btn").forEach(function (b) {
-    b.addEventListener("click", function () { setGrade(b.dataset.grade); });
-  });
-
-  document.querySelectorAll(".swatch").forEach(function (b) {
-    b.addEventListener("click", function () { setCaptionColor(b.dataset.color); });
-  });
-
-  document.querySelectorAll(".sample-btn").forEach(function (b) {
-    b.addEventListener("click", function () { loadSample(b.dataset.sample); });
-  });
-
-  captionInput.addEventListener("input", function () {
-    state.caption = captionInput.value;
-    renderPreview();
-  });
-
-  subtitleInput.addEventListener("input", function () {
-    state.subtitle = subtitleInput.value;
-    renderPreview();
-  });
-
-  zoomSlider.addEventListener("input", function () {
-    setZoomPercent(parseInt(zoomSlider.value, 10));
-  });
-
-  document.getElementById("upload-btn").addEventListener("click", function () {
-    fileInput.click();
-  });
-
-  fileInput.addEventListener("change", function () {
-    var file = fileInput.files && fileInput.files[0];
-    if (!file) return;
-    var reader = new FileReader();
-    reader.onload = function () {
-      document.querySelectorAll(".sample-btn").forEach(function (b) {
-        b.classList.remove("is-active");
-      });
-      loadPhoto(reader.result, file.name);
-    };
-    reader.readAsDataURL(file);
-    fileInput.value = "";
-  });
-
-  /* ---------- drag and drop ---------- */
-
-  var dragDepth = 0;
-
-  wrap.addEventListener("dragenter", function (e) {
-    e.preventDefault();
-    dragDepth++;
-    dropHint.classList.add("visible");
-  });
-
-  wrap.addEventListener("dragover", function (e) {
-    e.preventDefault();
-  });
-
-  wrap.addEventListener("dragleave", function () {
-    dragDepth = Math.max(0, dragDepth - 1);
-    if (dragDepth === 0) dropHint.classList.remove("visible");
-  });
-
-  wrap.addEventListener("drop", function (e) {
-    e.preventDefault();
-    dragDepth = 0;
-    dropHint.classList.remove("visible");
-    var file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-    if (file && file.type.indexOf("image/") === 0) {
-      var reader = new FileReader();
-      reader.onload = function () {
-        document.querySelectorAll(".sample-btn").forEach(function (b) {
-          b.classList.remove("is-active");
-        });
-        loadPhoto(reader.result, file.name);
-      };
-      reader.readAsDataURL(file);
-    }
-  });
-
-  /* ---------- canvas interaction: select, pan, zoom ---------- */
-
-  function canvasPoint(e) {
-    var r = canvas.getBoundingClientRect();
-    return {
-      x: (e.clientX - r.left) * canvas.width / r.width,
-      y: (e.clientY - r.top) * canvas.height / r.height
-    };
-  }
-
-  function panelAt(x, y) {
-    var rects = panelRects(canvas.width, canvas.height);
+  function panelAt(clientX, clientY) {
+    var box = canvas.getBoundingClientRect();
+    var fx = (clientX - box.left) / box.width;
+    var fy = (clientY - box.top) / box.height;
+    var rects = panelsOf();
     for (var i = 0; i < rects.length; i++) {
       var r = rects[i];
-      if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) return i;
+      if (fx >= r.x && fx < r.x + r.w && fy >= r.y && fy < r.y + r.h) return i;
     }
-    return 0;
+    return -1;
+  }
+
+  function panelOverflowPx(index) {
+    if (!state.photo) return { x: 0, y: 0 };
+    var r = panelsOf()[index];
+    var pw = r.w * canvas.width;
+    var ph = r.h * canvas.height;
+    var panel = state.panels[index];
+    var scale =
+      Math.max(pw / state.photo.width, ph / state.photo.height) * panel.zoom;
+    return {
+      x: state.photo.width * scale - pw,
+      y: state.photo.height * scale - ph,
+    };
+  }
+
+  function syncZoomControl() {
+    var zoom = state.panels[state.selected].zoom;
+    zoomSlider.value = String(Math.round(zoom * 100));
+    zoomValue.textContent = Math.round(zoom * 100) + '%';
+  }
+
+  function selectPanel(index) {
+    if (index < 0 || index >= panelsOf().length) return;
+    state.selected = index;
+    syncZoomControl();
+    renderPreview();
   }
 
   var dragging = null;
 
-  canvas.addEventListener("pointerdown", function (e) {
-    if (!state.photo) return;
-    var p = canvasPoint(e);
-    state.selected = panelAt(p.x, p.y);
-    dragging = { x: p.x, y: p.y };
-    canvas.classList.add("dragging");
-    canvas.setPointerCapture(e.pointerId);
-    syncZoomUI();
+  canvas.addEventListener('pointerdown', function (event) {
+    var index = panelAt(event.clientX, event.clientY);
+    if (index < 0) return;
+    selectPanel(index);
+    canvas.setPointerCapture(event.pointerId);
+    dragging = {
+      index: index,
+      startX: event.clientX,
+      startY: event.clientY,
+      panX: state.panels[index].panX,
+      panY: state.panels[index].panY,
+    };
+  });
+
+  canvas.addEventListener('pointermove', function (event) {
+    if (!dragging) return;
+    var over = panelOverflowPx(dragging.index);
+    var panel = state.panels[dragging.index];
+    var box = canvas.getBoundingClientRect();
+    var scaleX = canvas.width / box.width;
+    var scaleY = canvas.height / box.height;
+    var dx = (event.clientX - dragging.startX) * scaleX;
+    var dy = (event.clientY - dragging.startY) * scaleY;
+    if (over.x > 0) panel.panX = clamp(dragging.panX + (2 * dx) / over.x, -1, 1);
+    if (over.y > 0) panel.panY = clamp(dragging.panY + (2 * dy) / over.y, -1, 1);
     renderPreview();
   });
 
-  canvas.addEventListener("pointermove", function (e) {
-    if (!dragging || !state.photo) return;
-    var p = canvasPoint(e);
-    var panel = state.panels[state.selected];
-    var rect = panelRects(canvas.width, canvas.height)[state.selected];
-    var m = maxPanPx(rect, panel);
-    if (m.x > 0) panel.fx = clamp01(panel.fx + (p.x - dragging.x) / m.x);
-    if (m.y > 0) panel.fy = clamp01(panel.fy + (p.y - dragging.y) / m.y);
-    dragging = { x: p.x, y: p.y };
-    renderPreview();
-  });
-
-  function endDrag(e) {
+  function endDrag() {
     dragging = null;
-    canvas.classList.remove("dragging");
-    if (e && e.pointerId !== undefined) {
-      try { canvas.releasePointerCapture(e.pointerId); } catch (err) {}
-    }
+  }
+  canvas.addEventListener('pointerup', endDrag);
+  canvas.addEventListener('pointercancel', endDrag);
+
+  canvas.addEventListener(
+    'wheel',
+    function (event) {
+      event.preventDefault();
+      var index = panelAt(event.clientX, event.clientY);
+      if (index < 0) return;
+      selectPanel(index);
+      var panel = state.panels[index];
+      panel.zoom = clamp(panel.zoom * Math.exp(-event.deltaY * 0.0012), 1, 3);
+      syncZoomControl();
+      renderPreview();
+    },
+    { passive: false }
+  );
+
+  // -- control wiring -----------------------------------------------------
+
+  function markActive(buttons, chosen) {
+    buttons.forEach(function (b) {
+      b.classList.toggle('active', b === chosen);
+    });
   }
 
-  canvas.addEventListener("pointerup", endDrag);
-  canvas.addEventListener("pointercancel", endDrag);
-
-  canvas.addEventListener("wheel", function (e) {
-    if (!state.photo) return;
-    e.preventDefault();
-    var p = canvasPoint(e);
-    var index = panelAt(p.x, p.y);
-    state.selected = index;
-    var panel = state.panels[index];
-    var rect = panelRects(canvas.width, canvas.height)[index];
-    // Zoom toward the cursor: keep the photo point under it fixed.
-    var before = photoOffset(rect, panel);
-    var imgX = (p.x - before.x) / before.scale;
-    var imgY = (p.y - before.y) / before.scale;
-    panel.zoom = Math.max(MIN_ZOOM,
-      Math.min(MAX_ZOOM, panel.zoom * (1 - e.deltaY * 0.0012)));
-    var after = drawnSize(rect, panel);
-    var m = maxPanPx(rect, panel);
-    var targetX = p.x - imgX * after.scale;
-    var targetY = p.y - imgY * after.scale;
-    var centerX = rect.x + (rect.w - after.w) / 2;
-    var centerY = rect.y + (rect.h - after.h) / 2;
-    panel.fx = m.x > 0 ? clamp01((targetX - centerX) / m.x) : 0;
-    panel.fy = m.y > 0 ? clamp01((targetY - centerY) / m.y) : 0;
-    syncZoomUI();
-    renderPreview();
-  }, { passive: false });
-
-  /* ---------- export ---------- */
-
-  function renderToSize(w, h) {
-    var off = document.createElement("canvas");
-    off.width = w;
-    off.height = h;
-    renderCover(off.getContext("2d"), w, h);
-    return off;
-  }
-
-  function exportPNG(w, h) {
-    if (!state.photo) return null;
-    var off = renderToSize(w, h);
-    var url = off.toDataURL("image/png");
-    var a = document.createElement("a");
-    a.href = url;
-    a.download = "vice-cover-" + w + "x" + h + ".png";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    lastExport = { width: w, height: h, at: Date.now() };
-    return url;
-  }
-
-  document.querySelectorAll(".export-btn").forEach(function (b) {
-    b.addEventListener("click", function () {
-      var parts = b.dataset.export.split("x");
-      exportPNG(parseInt(parts[0], 10), parseInt(parts[1], 10));
+  var layoutButtons = Array.prototype.slice.call(
+    document.querySelectorAll('.layout-btn')
+  );
+  layoutButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      state.layout = btn.getAttribute('data-layout');
+      if (state.selected >= panelsOf().length) state.selected = 0;
+      markActive(layoutButtons, btn);
+      syncZoomControl();
+      renderPreview();
     });
   });
 
-  /* ---------- startup ---------- */
+  var sampleButtons = Array.prototype.slice.call(
+    document.querySelectorAll('.sample-btn')
+  );
+  sampleButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      markActive(sampleButtons, btn);
+      loadPhotoFromUrl(
+        btn.getAttribute('data-sample'),
+        btn.getAttribute('data-framing')
+      );
+    });
+  });
 
-  function boot() {
-    state.panels = freshPanels();
-    loadPhoto(DEFAULT_PHOTO, "sunset-heist.jpg");
-    if (document.fonts && document.fonts.ready) {
-      document.fonts.ready.then(function () { renderPreview(); });
-    }
+  document.getElementById('photoInput').addEventListener('change', function (e) {
+    var file = e.target.files && e.target.files[0];
+    if (file) loadPhotoFromFile(file);
+    e.target.value = '';
+  });
+
+  frame.addEventListener('dragenter', function (e) {
+    e.preventDefault();
+    frame.classList.add('dragging');
+  });
+  frame.addEventListener('dragover', function (e) {
+    e.preventDefault();
+  });
+  frame.addEventListener('dragleave', function (e) {
+    e.preventDefault();
+    frame.classList.remove('dragging');
+  });
+  frame.addEventListener('drop', function (e) {
+    e.preventDefault();
+    frame.classList.remove('dragging');
+    var file = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file && file.type.indexOf('image/') === 0) loadPhotoFromFile(file);
+  });
+
+  document
+    .getElementById('captionInput')
+    .addEventListener('input', function (e) {
+      state.caption = e.target.value;
+      renderPreview();
+    });
+
+  document
+    .getElementById('subtitleInput')
+    .addEventListener('input', function (e) {
+      state.subtitle = e.target.value;
+      renderPreview();
+    });
+
+  var swatches = Array.prototype.slice.call(document.querySelectorAll('.swatch'));
+  swatches.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      state.captionColor = btn.getAttribute('data-color');
+      markActive(swatches, btn);
+      renderPreview();
+    });
+  });
+
+  var gradeButtons = Array.prototype.slice.call(
+    document.querySelectorAll('.grade-btn')
+  );
+  gradeButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      state.grade = btn.getAttribute('data-grade');
+      markActive(gradeButtons, btn);
+      renderPreview();
+    });
+  });
+
+  zoomSlider.addEventListener('input', function () {
+    var panel = state.panels[state.selected];
+    panel.zoom = clamp(parseInt(zoomSlider.value, 10) / 100, 1, 3);
+    zoomValue.textContent = zoomSlider.value + '%';
+    renderPreview();
+  });
+
+  var exportButtons = Array.prototype.slice.call(
+    document.querySelectorAll('.export-btn')
+  );
+  exportButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var parts = btn.getAttribute('data-export').split('x');
+      downloadExport(parseInt(parts[0], 10), parseInt(parts[1], 10));
+    });
+  });
+
+  // -- start ---------------------------------------------------------------
+
+  loadPhotoFromUrl('samples/sunset-heist.jpg', 'heist');
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(renderPreview);
   }
 
-  /* Test and screenshot hooks: the app's own state and render, exposed
-     so an automated check can drive the editor exactly as a person would. */
-  window.viceCover = {
+  // Small automation hook used by the maker's own play-tests and
+  // screenshot runs; it only drives the same UI state a person can set.
+  window.VICECOVER = {
     state: state,
-    setLayout: setLayout,
-    setGrade: setGrade,
-    setCaptionColor: setCaptionColor,
-    setCaption: function (t) { state.caption = t; captionInput.value = t; renderPreview(); },
-    setSubtitle: function (t) { state.subtitle = t; subtitleInput.value = t; renderPreview(); },
-    loadSample: loadSample,
-    framePanel: framePanel,
-    setZoomPercent: setZoomPercent,
-    selectPanel: function (i) { state.selected = i; syncZoomUI(); renderPreview(); },
-    renderPreview: renderPreview,
-    renderToSize: renderToSize,
-    exportPNG: exportPNG,
-    lastExport: function () { return lastExport; },
-    previewDataURL: function () { return canvas.toDataURL("image/png"); }
+    loadSample: loadPhotoFromUrl,
+    renderCover: renderExport,
+    setPanel: function (index, panX, panY, zoom) {
+      var panel = state.panels[index];
+      if (!panel) return;
+      panel.panX = clamp(panX, -1, 1);
+      panel.panY = clamp(panY, -1, 1);
+      panel.zoom = clamp(zoom, 1, 3);
+      renderPreview();
+    },
+    setLayout: function (name) {
+      var btn = document.querySelector('[data-layout="' + name + '"]');
+      if (btn) btn.click();
+    },
+    setGrade: function (name) {
+      var btn = document.querySelector('[data-grade="' + name + '"]');
+      if (btn) btn.click();
+    },
+    setCaption: function (caption, subtitle) {
+      var cap = document.getElementById('captionInput');
+      var sub = document.getElementById('subtitleInput');
+      cap.value = caption;
+      sub.value = subtitle || '';
+      state.caption = caption;
+      state.subtitle = subtitle || '';
+      renderPreview();
+    },
   };
-
-  boot();
 })();
